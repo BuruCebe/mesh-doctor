@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.zip
+*.blend1
+docs/frames/
+dist/

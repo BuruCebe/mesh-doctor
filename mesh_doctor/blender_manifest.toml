@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "mesh_doctor"
+version = "0.1.0"
+name = "Mesh Doctor"
+tagline = "Catch triangle soup, box-kitbashing, bad normals and other tells"
+maintainer = "BuruCebe"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+license = ["SPDX:MIT"]
+tags = ["Mesh", "Modeling"]
