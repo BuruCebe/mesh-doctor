@@ -1,8 +1,8 @@
-# The tells: what makes a 3D model look generated
+# The tells: what makes 3D work look generated
 
-Generated geometry fails in predictable ways. Most of it comes from three sources, and each leaves its own fingerprints.
+Generated 3D fails in predictable ways. Sections 1 to 3 cover where the geometry comes from; sections 4 to 6 cover everything around it: materials, lighting, camera, scene and animation. Model Doctor checks for most of these.
 
-Every row says where it comes from. A footnote links to the published source. **(MD)** marks something we measured ourselves while calibrating Mesh Doctor on AI-scripted scenes and known-clean assets; treat those as our observations, not established findings.
+Every row says where it comes from. A footnote links to the published source. **(MD)** marks something we measured ourselves while calibrating Model Doctor on AI-scripted scenes and known-clean assets, or a rule of thumb from 3D practice; treat those as our observations, not established findings.
 
 ## 1. Image or text to 3D generators
 
@@ -47,12 +47,42 @@ Language models can write Blender Python that builds a whole scene; research sys
 | **Non-functional features** | Overlapping features, missing drafts on internal walls, snap fits that would never work | Leo AI review[^leo] |
 | **Mesh bodies** | Triangulated meshes brought in as bodies instead of solid geometry | (MD) |
 
-## What a human-made model has instead
+## 4. Materials and textures
+
+A clean mesh still looks generated if every surface is the same flat plastic, or if the texture fights the lighting.
+
+| Tell | What you see | Source |
+|---|---|---|
+| **Projected, lit textures** | One color texture projected from a 2D image, with the lighting of that image baked in | Liz Edwards in Game Developer[^gamedev]; SF3D paper[^sf3d] |
+| **Color texture only** | A color map but no roughness or normal detail, so the whole surface has one sheen | (MD) |
+| **Flat default materials** | One base color and one roughness value on every part; no wear, no breakup | (MD) |
+| **Missing textures** | Pink or black surfaces where image files didn't come along | (MD) |
+
+## 5. Lighting, color and camera
+
+| Tell | What you see | Source |
+|---|---|---|
+| **Flat lighting** | No lights and a plain world color: no key light, no shadow shape, no separation from the background. Classic three-point lighting uses a key, a softer fill and a back light for separation | Three-point lighting[^threepoint]; (MD) for the check |
+| **Harsh color** | The *Standard* view transform does no conversion beyond the display's, while *AgX* is the transform the manual describes as giving more photorealistic results | Blender Manual[^blendercm] |
+| **Default camera** | The startup scene's camera angle and lens, so the shot wasn't framed on purpose | (MD) |
+
+## 6. Scene and animation
+
+| Tell | What you see | Source |
+|---|---|---|
+| **Identical clones** | Rows of copies with exactly the same rotation and scale | (MD) |
+| **Unreal scale** | Scenes kilometers wide or millimeters small, which breaks light falloff, depth of field and physics | (MD) |
+| **Robotic timing** | Keyframes evenly spaced with linear motion. Animators add *slow in and slow out* and vary *timing*, two of Disney's twelve principles | Twelve principles of animation[^twelve] |
+
+## What finished work has instead
 
 - **Edge flow**: edge loops placed on purpose, for example at joints that bend.[^neural4d]
 - **Sensible density**: a crate that needs 500 triangles has about 500.[^gamedev]
 - **Broken edges**: small bevels, fillets or chamfers where a real object has them. (MD)
 - **Clean data**: applied transforms, outward normals, unwrapped UVs, meaningful names. (MD)
+- **Materials with history**: roughness breakup, color variation, wear where hands and weather would leave it. (MD)
+- **Lighting with intent**: a key light that shapes the form, fill that controls contrast, and a rim that separates the subject.[^threepoint]
+- **Motion with weight**: easing and varied timing instead of evenly spaced keys.[^twelve]
 
 ## Caveat
 
@@ -71,3 +101,9 @@ None of these tells proves anything on its own. Game assets are often fully tria
 [^ll3m]: Threedle, [LL3M](https://github.com/threedle/ll3m): LLM agents that build 3D assets by writing Blender Python. Used as an example of script-built 3D.
 
 [^leo]: Leo AI, [hands-on review of an AI assistant designing parts in Autodesk Fusion](https://www.getleo.ai/blog/claude-autodesk-fusion-3d-models-review), May 12, 2026. Used for: absolute coordinates instead of constrained sketches, brittle sketches, overlapping features, missing drafts and non-working snap fits.
+
+[^threepoint]: Wikipedia, ["Three-point lighting"](https://en.wikipedia.org/wiki/Three-point_lighting). Used for: the roles of key, fill and back light, which the light-rig fix follows.
+
+[^blendercm]: Blender Foundation, ["Color Management"](https://docs.blender.org/manual/en/4.2/render/color_management.html), Blender 4.2 Manual. Used for: what the *Standard* and *AgX* view transforms do.
+
+[^twelve]: Wikipedia, ["Twelve basic principles of animation"](https://en.wikipedia.org/wiki/Twelve_basic_principles_of_animation), summarizing Ollie Johnston and Frank Thomas, *The Illusion of Life: Disney Animation* (1981). Used for: slow in and slow out, and timing.

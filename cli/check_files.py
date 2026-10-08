@@ -12,8 +12,8 @@ import sys
 
 import bpy
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from mesh_doctor import checks  # noqa: E402
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+from model_doctor import checks  # noqa: E402
 
 EXTS = {".blend", ".obj", ".fbx", ".glb", ".gltf", ".stl"}
 
@@ -68,14 +68,15 @@ def main():
             print(f"\n## {path}\n  could not open: {e}")
             continue
         objs = [o for o in bpy.data.objects if o.users_scene]
-        found = checks.scan(objs, bpy.data.texts, bpy.data.materials, bpy.data.images)
+        found = checks.scan(objs, bpy.data.texts, bpy.data.materials, bpy.data.images,
+                            scene=bpy.context.scene)
         warn = [f for f in found if f.severity != checks.INFO]
         total_warn += len(warn)
-        report[path] = [f.__dict__ for f in found]
+        report[path] = [{**f.__dict__, "category": f.category} for f in found]
         print(f"\n## {path}\n  {len(warn)} warning(s), {len(found) - len(warn)} suggestion(s)")
         for f in found if show_all else warn:
-            where = f"{f.object}: " if f.object else ""
-            print(f"  [{f.severity}] {where}{f.message}")
+            where = f"{f.target}: " if f.target else ""
+            print(f"  [{f.severity}] {f.category} / {where}{f.message}")
 
     if out:
         with open(out, "w", encoding="utf-8") as fh:

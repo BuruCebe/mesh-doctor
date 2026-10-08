@@ -3,7 +3,7 @@
 	"type": "script",
 	"author": "BuruCebe",
 	"description": {
-		"": "Checks the open design for unconstrained sketches, mesh bodies, missing fillets and default names."
+		"": "Checks the open design for unconstrained sketches, mesh bodies, missing fillets, one-material renders and default names."
 	},
 	"supportedOS": "windows|mac",
 	"editEnabled": true

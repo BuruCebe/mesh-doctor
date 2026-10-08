@@ -1,4 +1,4 @@
-"""Render the README before/after images with Mesh Doctor's own checks and fixes.
+"""Render the README before/after images with Model Doctor's own checks and fixes.
 
     blender -b --factory-startup -P docs/images/render.py
     python docs/images/compose.py
@@ -14,8 +14,8 @@ import bpy
 from mathutils import Vector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", ".."))
-from mesh_doctor import checks, fixes  # noqa: E402
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "..")))
+from model_doctor import checks, fixes  # noqa: E402
 
 RAW = os.path.join(HERE, "_raw")
 os.makedirs(RAW, exist_ok=True)
@@ -140,7 +140,92 @@ q.data.shade_smooth()
 expect("TRIANGLE_SOUP" not in codes(q), "quad sphere should not be soup")
 shoot(q, os.path.join(RAW, "quads.png"), dist=3.0, extra=(with_wire(q),))
 
-# 4. Demo file for the batch checker screenshot ---------------------------
+# 4. Whole-scene look: flat CG defaults -> Model Doctor's fixes -------------
+def build_look_scene():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    eevee = next(i.identifier for i in
+                 bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items
+                 if i.identifier.startswith("BLENDER_EEVEE"))
+    sc.render.engine = eevee
+    sc.render.resolution_x, sc.render.resolution_y = 640, 480
+    sc.eevee.taa_render_samples = 64
+    sc.view_settings.view_transform = "Standard"
+    world = bpy.data.worlds.new("Plain")
+    world.use_nodes = True
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.05, 0.05, 0.05, 1)
+    sc.world = world
+
+    def mat(name, color, rough):
+        m = bpy.data.materials.new(name)
+        m.use_nodes = True
+        p = m.node_tree.nodes["Principled BSDF"]
+        p.inputs["Base Color"].default_value = color
+        p.inputs["Roughness"].default_value = rough
+        return m
+
+    paint = mat("Painted_Steel", (0.55, 0.12, 0.08, 1), 0.35)
+    floor_m = mat("Concrete", (0.42, 0.41, 0.39, 1), 0.8)
+    rubber = mat("Rubber", (0.04, 0.04, 0.045, 1), 0.6)
+
+    def part(name, build, m, loc):
+        me = bpy.data.meshes.new(name)
+        bm = bmesh.new()
+        build(bm)
+        bm.to_mesh(me)
+        bm.free()
+        o = bpy.data.objects.new(name, me)
+        o.location = loc
+        o.data.materials.append(m)
+        sc.collection.objects.link(o)
+        return o
+
+    floor = part("Floor", lambda bm: bmesh.ops.create_grid(bm, x_segments=1, y_segments=1,
+                                                            size=4), floor_m, (0, 0, 0))
+    floor.data.uv_layers.new()
+    box = part("Toolbox", housing, paint, (0, 0, 0.35))
+    box.data.uv_layers.new()
+    wheel = part("Wheel", lambda bm: bmesh.ops.create_cone(
+        bm, cap_ends=True, segments=48, radius1=0.28, radius2=0.28, depth=0.16), rubber,
+        (1.15, -0.25, 0.28))
+    wheel.rotation_euler = (math.radians(90), 0, math.radians(20))
+    wheel.data.uv_layers.new()
+
+    cam_obj = bpy.data.objects.new("Cam", bpy.data.cameras.new("Cam"))
+    sc.collection.objects.link(cam_obj)
+    sc.camera = cam_obj
+    cam_obj.data.lens = 55
+    cam_obj.location = (2.7, -3.3, 1.9)
+    target = Vector((0.35, 0, 0.35))
+    cam_obj.rotation_euler = (target - cam_obj.location).to_track_quat("-Z", "Y").to_euler()
+    return sc, (box, wheel), (paint, floor_m, rubber)
+
+
+def look_codes(sc):
+    bpy.context.view_layer.update()
+    return {f.code for f in checks.scan(list(sc.objects), scene=sc)}
+
+
+sc, parts, mats = build_look_scene()
+before = look_codes(sc)
+expect({"FLAT_LIGHTING", "FLAT_MATERIAL", "STANDARD_VIEW", "RAZOR_EDGES"} <= before,
+       f"flat scene should be flagged, got {before}")
+sc.render.filepath = os.path.join(RAW, "look_before.png")
+bpy.ops.render.render(write_still=True)
+
+for m in mats:
+    fixes.add_surface_variation(bpy.context, m)
+fixes.add_light_rig(bpy.context, sc)
+fixes.use_agx(bpy.context, sc)
+fixes.add_bevel(bpy.context, parts[0])
+fixes.add_bevel(bpy.context, parts[1])
+after = look_codes(sc)
+expect(not ({"FLAT_LIGHTING", "FLAT_MATERIAL", "STANDARD_VIEW", "RAZOR_EDGES"} & after),
+       f"fixes should clear the flags, still have {after}")
+sc.render.filepath = os.path.join(RAW, "look_after.png")
+bpy.ops.render.render(write_still=True)
+
+# 5. Demo file for the batch checker screenshot ---------------------------
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 

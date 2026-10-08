@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "model_doctor"
+version = "0.1.0"
+name = "Model Doctor"
+tagline = "Find and fix what makes 3D work look generated or unfinished"
+maintainer = "BuruCebe"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+license = ["SPDX:MIT"]
+tags = ["Mesh", "Modeling", "Material", "Lighting"]

@@ -1,9 +1,10 @@
-"""Mesh Doctor: catch the tells of generated, scripted and unfinished geometry."""
+"""Model Doctor: find and fix what makes 3D work look generated or unfinished."""
 
 import bpy
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
+    EnumProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
@@ -12,10 +13,14 @@ from bpy.props import (
 from . import checks, fixes
 
 SEVERITY_ICON = {checks.ERROR: "CANCEL", checks.WARNING: "ERROR", checks.INFO: "INFO"}
+KIND_ICON = {checks.OBJECT: "OBJECT_DATA", checks.MATERIAL: "MATERIAL",
+             checks.SCENE: "SCENE_DATA"}
 
 
 class CheckItem(bpy.types.PropertyGroup):
-    object: StringProperty()
+    target: StringProperty()
+    kind: StringProperty()
+    category: StringProperty()
     code: StringProperty()
     severity: StringProperty()
     message: StringProperty()
@@ -27,34 +32,54 @@ class DoctorState(bpy.types.PropertyGroup):
     index: IntProperty()
     selected_only: BoolProperty(
         name="Selected Only", default=False,
-        description="Check only the selected objects")
+        description="Check only the selected objects (lighting and camera are always checked)")
     show_info: BoolProperty(
         name="Show Suggestions", default=True,
-        description="Also list INFO-level suggestions, not just warnings")
+        description="Also list suggestions, not just warnings")
+    category: EnumProperty(
+        name="Show",
+        items=[("ALL", "All Categories", "")] + [(c, c, "") for c in checks.CATEGORIES])
     scanned: BoolProperty()
 
 
-def _visible_items(state):
-    return [i for i in state.items if state.show_info or i.severity != checks.INFO]
+def _shown(state, item):
+    return ((state.show_info or item.severity != checks.INFO)
+            and state.category in ("ALL", item.category))
+
+
+def _resolve(context, kind, name):
+    if kind == checks.MATERIAL:
+        return bpy.data.materials.get(name)
+    if kind == checks.SCENE:
+        return context.scene
+    return bpy.data.objects.get(name)
 
 
 def run_scan(context):
-    state = context.scene.mesh_doctor
+    state = context.scene.model_doctor
     context.view_layer.update()  # world matrices must reflect fixes just applied
     objs = context.selected_objects if state.selected_only else context.scene.objects
-    found = checks.scan(objs, bpy.data.texts, bpy.data.materials, bpy.data.images)
+    found = checks.scan(objs, bpy.data.texts, bpy.data.materials, bpy.data.images,
+                        scene=context.scene)
     state.items.clear()
     for f in found:
         item = state.items.add()
-        item.object, item.code, item.severity = f.object, f.code, f.severity
-        item.message, item.fix = f.message, f.fix
+        item.target, item.kind, item.category = f.target, f.kind, f.category
+        item.code, item.severity, item.message, item.fix = f.code, f.severity, f.message, f.fix
     state.index = 0
     state.scanned = True
     return found
 
 
-class MESH_DOCTOR_OT_scan(bpy.types.Operator):
-    bl_idname = "mesh_doctor.scan"
+def _apply(context, kind, name, key):
+    target = _resolve(context, kind, name)
+    if target is None:
+        raise fixes.FixError(f"{name} no longer exists")
+    fixes.FIXES[key][1](context, target)
+
+
+class MODEL_DOCTOR_OT_scan(bpy.types.Operator):
+    bl_idname = "model_doctor.scan"
     bl_label = "Scan"
     bl_description = "Check the scene (or selection) for common problems"
 
@@ -65,8 +90,8 @@ class MESH_DOCTOR_OT_scan(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MESH_DOCTOR_OT_select(bpy.types.Operator):
-    bl_idname = "mesh_doctor.select"
+class MODEL_DOCTOR_OT_select(bpy.types.Operator):
+    bl_idname = "model_doctor.select"
     bl_label = "Select Object"
     bl_description = "Select this object and make it active"
     bl_options = {"REGISTER", "UNDO"}
@@ -87,53 +112,49 @@ class MESH_DOCTOR_OT_select(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MESH_DOCTOR_OT_fix(bpy.types.Operator):
-    bl_idname = "mesh_doctor.fix"
+class MODEL_DOCTOR_OT_fix(bpy.types.Operator):
+    bl_idname = "model_doctor.fix"
     bl_label = "Fix"
     bl_options = {"REGISTER", "UNDO"}
 
     name: StringProperty()
+    kind: StringProperty(default=checks.OBJECT)
     fix: StringProperty()
 
     @classmethod
     def description(cls, context, props):
         label = fixes.FIXES.get(props.fix, ("Fix",))[0]
-        return f"{label} on {props.name}"
+        return f"{label} on {props.name}" if props.name else label
 
     def execute(self, context):
-        obj = bpy.data.objects.get(self.name)
-        if obj is None or self.fix not in fixes.FIXES:
+        if self.fix not in fixes.FIXES:
             return {"CANCELLED"}
-        label, fn, _ = fixes.FIXES[self.fix]
         try:
-            fn(context, obj)
+            _apply(context, self.kind, self.name, self.fix)
         except fixes.FixError as e:
             self.report({"WARNING"}, str(e))
             return {"CANCELLED"}
         run_scan(context)
-        self.report({"INFO"}, f"{label}: {obj.name}")
+        self.report({"INFO"}, fixes.FIXES[self.fix][0] + (f": {self.name}" if self.name else ""))
         return {"FINISHED"}
 
 
-class MESH_DOCTOR_OT_fix_all(bpy.types.Operator):
-    bl_idname = "mesh_doctor.fix_all"
+class MODEL_DOCTOR_OT_fix_all(bpy.types.Operator):
+    bl_idname = "model_doctor.fix_all"
     bl_label = "Fix All Safe"
     bl_description = ("Recalculate normals, apply scale and smooth shading everywhere "
-                      "they were flagged. Merging, bevels and UVs are left for you to "
-                      "decide")
+                      "they were flagged. Anything that changes the look (bevels, "
+                      "materials, lights, UVs) is left for you to decide")
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        state = context.scene.mesh_doctor
+        state = context.scene.model_doctor
         done, skipped = 0, []
-        todo = [(i.object, i.fix) for i in state.items
+        todo = [(i.kind, i.target, i.fix) for i in state.items
                 if i.fix and fixes.FIXES[i.fix][2]]
-        for name, key in todo:
-            obj = bpy.data.objects.get(name)
-            if obj is None:
-                continue
+        for kind, name, key in todo:
             try:
-                fixes.FIXES[key][1](context, obj)
+                _apply(context, kind, name, key)
                 done += 1
             except fixes.FixError as e:
                 skipped.append(str(e))
@@ -145,42 +166,43 @@ class MESH_DOCTOR_OT_fix_all(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MESH_DOCTOR_UL_items(bpy.types.UIList):
+def _fix_button(layout, item, text=""):
+    op = layout.operator("model_doctor.fix", text=text, icon="MODIFIER")
+    op.name, op.kind, op.fix = item.target, item.kind, item.fix
+
+
+class MODEL_DOCTOR_UL_items(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_prop, index):
         row = layout.row(align=True)
         title = checks.TITLES.get(item.code, item.code)
-        label = f"{title}  ·  {item.object}" if item.object else title
+        label = f"{title}  ·  {item.target}" if item.target else title
         row.label(text=label, icon=SEVERITY_ICON.get(item.severity, "DOT"))
-        if item.object:
-            row.operator("mesh_doctor.select", text="", icon="RESTRICT_SELECT_OFF",
-                         emboss=False).name = item.object
+        if item.target and item.kind == checks.OBJECT:
+            row.operator("model_doctor.select", text="", icon="RESTRICT_SELECT_OFF",
+                         emboss=False).name = item.target
         if item.fix:
-            op = row.operator("mesh_doctor.fix", text="", icon="MODIFIER")
-            op.name, op.fix = item.object, item.fix
+            _fix_button(row, item)
 
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
-        show_info = data.show_info
-        flags = [self.bitflag_filter_item if show_info or i.severity != checks.INFO else 0
-                 for i in items]
-        return flags, []
+        return [self.bitflag_filter_item if _shown(data, i) else 0 for i in items], []
 
 
-class VIEW3D_PT_mesh_doctor(bpy.types.Panel):
-    bl_label = "Mesh Doctor"
-    bl_idname = "VIEW3D_PT_mesh_doctor"
+class VIEW3D_PT_model_doctor(bpy.types.Panel):
+    bl_label = "Model Doctor"
+    bl_idname = "VIEW3D_PT_model_doctor"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "Mesh Doctor"
+    bl_category = "Model Doctor"
 
     def draw(self, context):
         layout = self.layout
-        state = context.scene.mesh_doctor
+        state = context.scene.model_doctor
 
         row = layout.row(align=True)
         row.scale_y = 1.4
-        row.operator("mesh_doctor.scan", icon="VIEWZOOM")
-        row.operator("mesh_doctor.fix_all", icon="BRUSH_DATA")
+        row.operator("model_doctor.scan", icon="VIEWZOOM")
+        row.operator("model_doctor.fix_all", icon="BRUSH_DATA")
         row = layout.row(align=True)
         row.prop(state, "selected_only")
         row.prop(state, "show_info")
@@ -188,30 +210,28 @@ class VIEW3D_PT_mesh_doctor(bpy.types.Panel):
         if not state.scanned:
             layout.label(text="Press Scan to check this scene.")
             return
-        visible = _visible_items(state)
-        if not visible:
+        if not any(_shown(state, i) for i in state.items) and state.category == "ALL":
             layout.label(text="No problems found.", icon="CHECKMARK")
             return
 
         warn = sum(1 for i in state.items if i.severity != checks.INFO)
         layout.label(text=f"{warn} warning(s), {len(state.items) - warn} suggestion(s)")
-        layout.template_list("MESH_DOCTOR_UL_items", "", state, "items", state, "index",
+        layout.prop(state, "category", text="")
+        layout.template_list("MODEL_DOCTOR_UL_items", "", state, "items", state, "index",
                              rows=8)
 
-        if 0 <= state.index < len(state.items):
+        if 0 <= state.index < len(state.items) and _shown(state, state.items[state.index]):
             item = state.items[state.index]
             box = layout.box()
             col = box.column(align=True)
-            col.label(text=checks.TITLES.get(item.code, item.code),
+            col.label(text=f"{checks.TITLES.get(item.code, item.code)}  ({item.category})",
                       icon=SEVERITY_ICON.get(item.severity, "DOT"))
-            if item.object:
-                col.label(text=item.object, icon="OBJECT_DATA")
+            if item.target:
+                col.label(text=item.target, icon=KIND_ICON.get(item.kind, "DOT"))
             for line in _wrap(item.message, max(20, int(context.region.width / 7))):
                 col.label(text=line)
             if item.fix:
-                op = box.operator("mesh_doctor.fix", text=fixes.FIXES[item.fix][0],
-                                  icon="MODIFIER")
-                op.name, op.fix = item.object, item.fix
+                _fix_button(box, item, fixes.FIXES[item.fix][0])
 
 
 def _wrap(text, width):
@@ -228,22 +248,22 @@ def _wrap(text, width):
 classes = (
     CheckItem,
     DoctorState,
-    MESH_DOCTOR_OT_scan,
-    MESH_DOCTOR_OT_select,
-    MESH_DOCTOR_OT_fix,
-    MESH_DOCTOR_OT_fix_all,
-    MESH_DOCTOR_UL_items,
-    VIEW3D_PT_mesh_doctor,
+    MODEL_DOCTOR_OT_scan,
+    MODEL_DOCTOR_OT_select,
+    MODEL_DOCTOR_OT_fix,
+    MODEL_DOCTOR_OT_fix_all,
+    MODEL_DOCTOR_UL_items,
+    VIEW3D_PT_model_doctor,
 )
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.mesh_doctor = PointerProperty(type=DoctorState)
+    bpy.types.Scene.model_doctor = PointerProperty(type=DoctorState)
 
 
 def unregister():
-    del bpy.types.Scene.mesh_doctor
+    del bpy.types.Scene.model_doctor
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

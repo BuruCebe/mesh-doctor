@@ -42,6 +42,9 @@ def pair(before, after, title, left, right, out):
     canvas.save(os.path.join(OUT, out), optimize=True)
 
 
+pair("look_before.png", "look_after.png",
+     "Flat CG defaults  →  light rig, surface variation, AgX, bevels",
+     "Before: flagged", "After the fixes", "look.png")
 pair("edges_before.png", "edges_after.png", "Razor-sharp edges  →  Add Bevel + Weighted Normal",
      "Before: flagged", "After one click", "edges.png")
 pair("shading_before.png", "shading_after.png", "Faceted shading  →  Shade Smooth by Angle",

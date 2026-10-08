@@ -1,12 +1,16 @@
-"""Mesh and scene checks. Pure data access (no operators), so it runs in the UI and headless."""
+"""Mesh checks and the scan entry point. Pure data access (no operators), so it runs in
+the UI and headless. Material, lighting, camera, scene and animation checks live in
+scene_checks.py."""
 
 import math
 import re
-from dataclasses import dataclass
 
 import numpy as np
 
-ERROR, WARNING, INFO = "ERROR", "WARNING", "INFO"
+from . import scene_checks
+from .finding import (  # noqa: F401  (re-exported for callers)
+    CATEGORIES, CODES, ERROR, INFO, MATERIAL, OBJECT, SCENE, TITLES, WARNING, Finding,
+)
 
 GENERIC_NAME = re.compile(
     r"^(mesh|geometry|geom|object|obj|model|material|mat|texture|tex|image|node|default)"
@@ -16,37 +20,7 @@ PRIMITIVE_NAME = re.compile(
 GENERATOR_NAME = re.compile(
     r"(tripo|meshy|rodin|hyper3d|hunyuan|trellis|luma|csm_|kaedim|sf3d|instantmesh)", re.I)
 
-TITLES = {
-    "TRIANGLE_SOUP": "Triangle soup",
-    "TRIANGULATED": "Fully triangulated",
-    "HEAVY": "Heavy mesh",
-    "LOOSE_BOXES": "Stacked loose boxes",
-    "NON_MANIFOLD": "Non-manifold edges",
-    "DUPLICATE_VERTS": "Overlapping vertices",
-    "INVERTED_NORMALS": "Inverted normals",
-    "NEGATIVE_SCALE": "Mirrored by scale",
-    "NONUNIFORM_SCALE": "Non-uniform scale",
-    "UNAPPLIED_SCALE": "Unapplied scale",
-    "RAZOR_EDGES": "Razor-sharp edges",
-    "FACETED": "Faceted shading",
-    "NO_UVS": "No UV map",
-    "GENERIC_NAME": "Generic name",
-    "GENERATOR_NAME": "Generator name",
-    "BOX_SCENE": "Scene of raw boxes",
-    "LEFTOVER_SCRIPTS": "Leftover scripts",
-    "GENERIC_DATA_NAMES": "Generic material names",
-}
-
 COMPONENT_VERT_LIMIT = 1_000_000  # skip loose-part analysis above this (too slow)
-
-
-@dataclass
-class Finding:
-    object: str        # object name, or "" for file-level findings
-    code: str
-    severity: str
-    message: str
-    fix: str = ""      # key into fixes.FIXES, or "" if it needs a human
 
 
 # --------------------------------------------------------------------------
@@ -123,6 +97,14 @@ def mesh_metrics(obj):
     closed = not (faces_per_edge == 1).any() and not (faces_per_edge > 2).any()
     volume = float((np.einsum("ij,ij->i", center, normal) * area).sum() / 3)
 
+    uv_split = None
+    if len(me.uv_layers):
+        uv = np.empty(nl * 2, np.float64)
+        me.uv_layers.active.data.foreach_get("uv", uv)
+        q = np.round(uv.reshape(-1, 2) * 8192).astype(np.int64)
+        pairs = np.stack((lv, q[:, 0], q[:, 1]), axis=1)
+        uv_split = len(np.unique(pairs, axis=0)) / max(nv, 1)
+
     components = box_parts = None
     if nv <= COMPONENT_VERT_LIMIT and ne:
         lab = _components(nv, ev)
@@ -150,6 +132,7 @@ def mesh_metrics(obj):
         "box_parts": box_parts,
         "smooth_pct": 100 * float(smooth.mean()),
         "has_uv": len(me.uv_layers) > 0,
+        "uv_split": uv_split,
         "scale": tuple(sc),
         "mirrored": obj.matrix_world.determinant() < 0,
         "is_box": nv == 8 and nf == 6,
@@ -236,6 +219,16 @@ def object_findings(obj, m):
             "No UV map, so it can't take real textures (only flat colors). Unwrap it.",
             "smart_uv")
 
+    if m["uv_split"] and m["uv_split"] >= 2.0 and m["faces"] >= 1000 and not soup:
+        add("FRAGMENTED_UVS", INFO,
+            f"UVs are cut into many small pieces (each vertex split {m['uv_split']:.1f}x on "
+            "average), typical of automatic atlases. Textures will show seams; re-unwrap "
+            "with seams in hidden places.")
+    elif m["uv_split"] and m["uv_split"] >= 2.0 and soup:
+        add("FRAGMENTED_UVS", WARNING,
+            "Generator-style UV atlas: shredded into many islands on a triangle-soup mesh. "
+            "Retopologize first, then unwrap and re-bake or re-texture.")
+
     if PRIMITIVE_NAME.match(name) or GENERIC_NAME.match(name):
         add("GENERIC_NAME", INFO,
             "Default or generic name. Name parts for what they are.")
@@ -246,8 +239,9 @@ def object_findings(obj, m):
     return f
 
 
-def scan(objects, texts=(), materials=(), images=()):
-    """Run all checks. Objects sharing a mesh are analysed once."""
+def scan(objects, texts=(), materials=(), images=(), scene=None):
+    """Run all checks. Objects sharing a mesh are analysed once. Pass `scene` to also
+    check lighting, camera and render settings."""
     findings, seen, metrics = [], set(), []
     for obj in objects:
         if obj.type != "MESH" or obj.data is None or obj.data.name in seen:
@@ -264,7 +258,8 @@ def scan(objects, texts=(), materials=(), images=()):
         findings.append(Finding(
             "", "BOX_SCENE", WARNING,
             f"{boxes} of {len(metrics)} meshes are untouched 8-vertex boxes. Scenes "
-            "built from raw primitives read as placeholder or scripted geometry."))
+            "built from raw primitives read as placeholder or scripted geometry.",
+            kind=SCENE))
 
     scripts = [t.name for t in texts
                if any("import bpy" in line.body for line in list(t.lines)[:40])]
@@ -273,15 +268,20 @@ def scan(objects, texts=(), materials=(), images=()):
             "", "LEFTOVER_SCRIPTS", INFO,
             f"{len(scripts)} generator script(s) left in the file: "
             f"{', '.join(scripts[:6])}{'…' if len(scripts) > 6 else ''}. "
-            "Remove them before sharing."))
+            "They're clutter for anyone opening the file; remove them before sharing.",
+            kind=SCENE))
 
     generic = [d.name for d in (*materials, *images)
                if GENERIC_NAME.match(d.name) or GENERATOR_NAME.search(d.name)]
     if generic:
         findings.append(Finding(
             "", "GENERIC_DATA_NAMES", INFO,
-            f"Generic or generator material/texture names: {', '.join(generic[:6])}."))
+            f"Generic or generator material/texture names: {', '.join(generic[:6])}. "
+            "Name materials for what they are (Brushed_Steel, Oak_Worn).", kind=SCENE))
+
+    findings.extend(scene_checks.run(objects, scene))
 
     order = {ERROR: 0, WARNING: 1, INFO: 2}
-    findings.sort(key=lambda x: (order[x.severity], x.object, x.code))
+    findings.sort(key=lambda x: (order[x.severity], CATEGORIES.index(x.category),
+                                 x.target, x.code))
     return findings
