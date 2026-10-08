@@ -4,3 +4,4 @@ __pycache__/
 *.blend1
 docs/frames/
 dist/
+docs/images/_raw/

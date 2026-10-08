@@ -1,8 +1,10 @@
 # Polish pass checklist
 
-Run through this before you render, export or share a model. Items marked **(auto)** are checked by Mesh Doctor.
+Run through this before you render, export or share a model. Items marked **(auto)** are checked by Mesh Doctor. The reasons behind each item, with sources, are in [The tells](tells.md).
 
 ## Blender
+
+**Diagnose first.** Turn on *Overlays > Statistics*, run *Select > Select All by Trait > Non Manifold*, turn on *Overlays > Face Orientation*, and run the *3D Print Toolbox* checks. This order comes from Neural4D's retopology guide ([source](https://blog.neural4d.com/user-guide/blender-retopology-ai-3d-models/)). Then work through the list.
 
 ### Geometry
 - [ ] **(auto)** No triangle soup. Imported scans and generator meshes get retopologized: *Remesh* (Quad), *QuadriFlow*, or manual retopo over the original.
